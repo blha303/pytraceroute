@@ -29,23 +29,28 @@ Core module
 
 import socket
 import random
+import sys
+import select
 
 __all__ = ['Tracer']
 
 
 class Tracer(object):
-    def __init__(self, dst, hops=30):
+    def __init__(self, dst, hops=30, verbose=True):
         """
         Initializes a new tracer object
 
         Args:
             dst  (str): Destination host to probe
             hops (int): Max number of hops to probe
+            verbose (bool): Print on each hop. Otherwise,
+            self.run() returns list when complete
 
         """
         self.dst = dst
         self.hops = hops
         self.ttl = 1
+        self.verbose = verbose
 
         # Pick up a random port in the range 33434-33534
         self.port = random.choice(range(33434, 33535))
@@ -69,8 +74,10 @@ class Tracer(object):
             self.hops
         )
 
-        print(text)
+        if self.verbose:
+            print(text, file=sys.stderr)
 
+        output = []
         while True:
             receiver = self.create_receiver() 
             sender = self.create_sender()
@@ -78,22 +85,38 @@ class Tracer(object):
 
             addr = None
             try:
-                data, addr = receiver.recvfrom(1024)
+                # timeout 3 seconds
+                ready = select.select([receiver], [], [], 3)
+                if ready[0]:
+                    data, addr = receiver.recvfrom(1024)
+                else:
+                    data, addr = None, [""]
             except socket.error:
                 raise IOError('Socket error: {}'.format(e))
             finally:
                 receiver.close()                
                 sender.close()
+            try:
+                if addr[0]:
+                    fqdn = socket.gethostbyaddr(addr[0])[0]
+                else:
+                    fqdn = ""
+            except socket.herror:
+                fqdn = ""
 
-            if addr:
-                print('{:<4} {}'.format(self.ttl, addr[0]))
+            if addr[0]:
+                output.append((addr[0], fqdn))
             else:
-                print('{:<4} *'.format(self.ttl))
+                output.append(("*", fqdn))
+
+            if self.verbose:
+                print('{:<4} {}'.format(self.ttl, "{} [{}]".format(fqdn, addr[0]) if fqdn else addr[0] if addr[0] else "*"))
 
             self.ttl += 1
 
             if addr[0] == dst_ip or self.ttl > self.hops:
                 break
+        return output
 
     def create_receiver(self):
         """
